@@ -1,0 +1,6 @@
+name: mc-backbreaker
+version: '${project.version}'
+main: com.mczju.mcbackbreaker.McBackbreaker
+api-version: '26.2'
+depend:
+  - MCZJUGameCore
