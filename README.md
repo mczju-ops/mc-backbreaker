@@ -48,6 +48,6 @@
 
 本项目使用 Kotlin、Paper 26.2 和 MCZJUGameCore 1.0.7。将打包生成的 jar 与 MCZJUGameCore 一起放入服务器 `plugins` 目录，并在 MGC 中为游戏 `mc_backbreaker_slime_trap` 创建房间。房间必须设置 `spawnLocation`，建议将其放在有地面、上方至少两格净空的场地中央；玩家与史莱姆共用此出生点。场地边界需要由地图本身提供。
 
-房间中可调整 `spawnDelaySeconds`（首次出现等待）、`roundSeconds`（每轮倒计时）、`slimeSpeed`（每 tick 移动格数）、`attachDistance`（附身距离）、`throwDelaySeconds`（可投掷等待）、`throwSpeed`（投掷速度）、`slowAmplifier` 与 `attachedSlowAmplifier`（缓慢效果等级，0 为缓慢 I）。每局接受 3 至 7 人。
+房间中可调整 `spawnDelaySeconds`（首次出现等待）、`roundSeconds`（每轮爆炸基准时间）、`showExplosionCountdown`（是否显示爆炸倒计时，默认 `true`）、`explosionTimeVarianceSeconds`（爆炸时间随机增减的最大秒数，默认 `0`）、`slimeSpeed`（每 tick 移动格数）、`attachDistance`（附身距离）、`throwDelaySeconds`（可投掷等待）、`throwSpeed`（投掷速度）、`slowAmplifier` 与 `attachedSlowAmplifier`（缓慢效果等级，0 为缓慢 I）。每轮爆炸时间会在基准时间上下限内随机取值，最低为 1 秒。史莱姆会随爆炸临近加快闪烁，并播放音符盒提示音；关闭倒计时文字不会关闭这些预警效果。每局接受 3 至 7 人。
 
 使用 `mvn -DskipTests -Dkotlin.compiler.daemon=false -Dkotlin.compiler.execution.strategy=in-process package` 构建。运行时建议验证：正常附身与投掷、倒计时归零时的两种情况、玩家死亡和中途退出后的 5 秒重置、最后一人结算，以及多房间同时运行。

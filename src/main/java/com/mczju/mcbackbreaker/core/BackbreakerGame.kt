@@ -47,6 +47,7 @@ class BackbreakerGame : AbstractGame() {
     private var ticks = 0L
     private var phaseTicks = 0
     private var roundTicks = 0
+    private var roundDurationTicks = 0
     private var round = 0
     private var lethal = false
     private var ending = false
@@ -64,6 +65,7 @@ class BackbreakerGame : AbstractGame() {
         val valid = spawn?.world != null && spawn.clone().subtract(0.0, 1.0, 0.0).block.type.isSolid &&
             spawn.block.isPassable && spawn.clone().add(0.0, 1.0, 0.0).block.isPassable &&
             r.spawnDelaySeconds in 0..60 && r.roundSeconds in 1..3600 &&
+            r.explosionTimeVarianceSeconds in 0..3600 &&
             r.slimeSpeed in 0.02..0.8 && r.attachDistance in 0.7..4.0 &&
             r.throwDelaySeconds in 0..60 && r.throwSpeed in 0.2..3.0 &&
             r.slowAmplifier in 0..10 && r.attachedSlowAmplifier in r.slowAmplifier..20
@@ -225,19 +227,42 @@ class BackbreakerGame : AbstractGame() {
         val r = gameRoom as BackbreakerRoom
         if (!lethal) {
             roundTicks++
-            if (roundTicks >= r.roundSeconds * 20) {
+            if (roundTicks >= roundDurationTicks) {
                 lethal = true
                 sender.warn("时间到！史莱姆下次附身将淘汰玩家！")
                 players.forEach { it.player.playSound(it.player.location, Sound.BLOCK_BELL_USE, 1f, 0.7f) }
                 if (phase == Phase.ATTACHED) {
+                    updateSlimeWarning(r)
                     holder?.let(Bukkit::getPlayer)?.let { eliminate(PlayerExt(it)) }
                     return
                 }
             }
         }
-        bossBar?.setTitle(if (lethal) "危险！下次附身立刻淘汰" else "第${round}轮 · 剩余${ceil((r.roundSeconds * 20 - roundTicks) / 20.0).toInt()}秒")
-        bossBar?.progress = if (lethal) 0.0 else (1.0 - roundTicks.toDouble() / (r.roundSeconds * 20)).coerceIn(0.0, 1.0)
+        bossBar?.setTitle(when {
+            lethal -> "危险！下次附身立刻淘汰"
+            r.showExplosionCountdown -> "第${round}轮 · 剩余${ceil((roundDurationTicks - roundTicks).coerceAtLeast(0) / 20.0).toInt()}秒"
+            else -> "第${round}轮"
+        })
+        bossBar?.progress = if (lethal || !r.showExplosionCountdown) 1.0 else
+            (1.0 - roundTicks.toDouble() / roundDurationTicks.coerceAtLeast(1)).coerceIn(0.0, 1.0)
         bossBar?.color = if (lethal) BarColor.RED else BarColor.GREEN
+        updateSlimeWarning(r)
+    }
+
+    /** 闪烁和提示音只依赖真实剩余时间，不受倒计时文字显示开关影响。 */
+    private fun updateSlimeWarning(r: BackbreakerRoom) {
+        val entity = slime ?: return
+        val remainingTicks = (roundDurationTicks - roundTicks).coerceAtLeast(0)
+        val interval = when {
+            remainingTicks > 200 -> 10
+            else -> (remainingTicks / 20).coerceIn(1, 10)
+        }
+        val glowing = ticks % (interval * 2L) < interval
+        entity.isGlowing = glowing
+        if (glowing && ticks % (interval * 2L) == 0L) {
+            val pitch = (1.0f + (1.0f - (remainingTicks / 600.0f).coerceIn(0.0f, 1.0f)) * 0.8f)
+            entity.world.playSound(entity.location, Sound.BLOCK_NOTE_BLOCK_PLING, 0.7f, pitch)
+        }
     }
 
     private fun attach(player: Player) {
@@ -310,6 +335,9 @@ class BackbreakerGame : AbstractGame() {
         thrownVelocity = null
         round++
         roundTicks = 0
+        val variance = r.explosionTimeVarianceSeconds
+        val offset = if (variance == 0) 0 else kotlin.random.Random.nextInt(-variance, variance + 1)
+        roundDurationTicks = (r.roundSeconds + offset).coerceAtLeast(1) * 20
         lethal = false
         holder = null
         phase = Phase.HUNTING

@@ -11,6 +11,10 @@ class BackbreakerRoom : JsonGameRoom() {
     @JvmField var spawnDelaySeconds = 5
     @field:FieldDescription("每轮倒计时秒数")
     @JvmField var roundSeconds = 30
+    @field:FieldDescription("是否显示史莱姆爆炸倒计时")
+    @JvmField var showExplosionCountdown = true
+    @field:FieldDescription("每轮爆炸时间随机增减的最大秒数")
+    @JvmField var explosionTimeVarianceSeconds = 0
     @field:FieldDescription("史莱姆追踪速度，每tick移动的格数")
     @JvmField var slimeSpeed = 0.18
     @field:FieldDescription("史莱姆附身距离")
