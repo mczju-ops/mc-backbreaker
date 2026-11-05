@@ -11,6 +11,8 @@ class McBackbreaker : JavaPlugin() {
         instance = this
         PluginLoader.run(javaClass)
         MCZJUGameCore.getGameManager().registerGame(BackbreakerGame::class.java, BackbreakerRoom::class.java)
+        com.mczju.mcbackbreaker.statistics.RoundStatistics.register(this)
+        com.mczju.mcbackbreaker.achievement.GameAchievements.register(this)
     }
 
     override fun onDisable() { BackbreakerGame.shutdownAll() }

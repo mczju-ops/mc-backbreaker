@@ -6,7 +6,7 @@
 
     <groupId>com.github.yikuni</groupId>
     <artifactId>mc-backbreaker</artifactId>
-    <version>26.2-260924</version>
+    <version>26.2-261105</version>
     <packaging>jar</packaging>
 
     <name>mc-backbreaker</name>
@@ -139,7 +139,7 @@
         <dependency>
             <groupId>com.github.mczju-ops</groupId>
             <artifactId>MCZJUGameCore</artifactId>
-            <version>1.0.7</version>
+            <version>1.5.1</version>
             <scope>provided</scope>
         </dependency>
         <dependency>

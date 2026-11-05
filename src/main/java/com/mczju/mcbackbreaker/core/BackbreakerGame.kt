@@ -1,5 +1,9 @@
 package com.mczju.mcbackbreaker.core
 
+import com.mczju.mcbackbreaker.statistics.RoundStatistics
+import com.mczju.mcbackbreaker.achievement.GameAchievements
+import com.github.mczjuops.mczjugamecore.event.GameResultEvent.Outcome
+
 import com.github.mczjuops.mczjugamecore.MCZJUGameCore
 import com.github.mczjuops.mczjugamecore.game.AbstractGame
 import com.github.mczjuops.mczjugamecore.game.GameMeta
@@ -33,6 +37,14 @@ import java.util.UUID
 import kotlin.math.ceil
 
 class BackbreakerGame : AbstractGame() {
+    private val statistics = RoundStatistics(this)
+    private val throwCounts = mutableMapOf<UUID, Int>()
+    private val everAttached = mutableSetOf<UUID>()
+    private val throwTargets = mutableMapOf<UUID, MutableSet<UUID>>()
+    private val lastSecondThrows = mutableSetOf<UUID>()
+    private var lastThrower: UUID? = null
+    private var initialPlayers = 0
+
     private enum class Phase { SPAWN_DELAY, HUNTING, ATTACHING, ATTACHED, THROWN, RESET_DELAY }
     private var phase = Phase.SPAWN_DELAY
     private var task: BukkitTask? = null
@@ -43,6 +55,7 @@ class BackbreakerGame : AbstractGame() {
     private val alive = linkedSetOf<UUID>()
     private val survivors = linkedMapOf<UUID, String>()
     private val survivalTicks = mutableMapOf<UUID, Long>()
+    private val heldTicks = mutableMapOf<UUID, Int>()
     private var holder: UUID? = null
     private var ticks = 0L
     private var phaseTicks = 0
@@ -54,7 +67,7 @@ class BackbreakerGame : AbstractGame() {
     private var flightStart: Location? = null
 
     override fun getId() = "mc_backbreaker_slime_trap"
-    override fun getGameMeta() = GameMeta("史莱姆陷阱(制作中)", Material.SLIME_BLOCK, "Yikuni", listOf(
+    override fun getGameMeta() = GameMeta("史莱姆陷阱", Material.SLIME_BLOCK, "Yikuni", listOf(
         "躲开邪恶史莱姆", "利用好友当挡箭牌", "最后存活的人获胜", "推荐人数：3-7"
     ))
     override fun getGameWaitStrategy(): GameWaitStrategy = DefaultGameWaitStrategy(this, 7, 2)
@@ -67,20 +80,22 @@ class BackbreakerGame : AbstractGame() {
             r.spawnDelaySeconds in 0..60 && r.roundSeconds in 1..3600 &&
             r.explosionTimeVarianceSeconds in 0..3600 &&
             r.slimeSpeed in 0.02..0.8 && r.attachDistance in 0.7..4.0 &&
-            r.throwDelaySeconds in 0..60 && r.throwSpeed in 0.2..3.0 &&
-            r.slowAmplifier in 0..10 && r.attachedSlowAmplifier in r.slowAmplifier..20
+            r.throwDelaySeconds in 0..60 && r.attachedExplosionSeconds <= 3600 && r.throwSpeed in 0.2..3.0 &&
+            r.playerSpeed in 0.0f..1.0f && r.attachedPlayerSpeed in 0.0f..r.playerSpeed
         if (!valid) logger.error("房间${r.roomName}配置无效：请设置出生点并检查史莱姆速度、距离和各时间参数")
         return valid
     }
 
     override fun onGameStart() {
+        initialPlayers = players.size
         val r = gameRoom as BackbreakerRoom
         alive.clear()
+        heldTicks.clear()
         players.forEach { ext ->
             val player = ext.player
             alive.add(ext.uniqueId)
             survivors[ext.uniqueId] = player.name
-            ext.resetState()
+            resetPlayerState(ext)
             player.inventory.clear()
             player.gameMode = GameMode.ADVENTURE
             player.teleport(r.spawnLocation!!)
@@ -111,13 +126,18 @@ class BackbreakerGame : AbstractGame() {
 
     fun throwSlime(player: Player): Boolean {
         val r = gameRoom as BackbreakerRoom
-        if (state != GameState.RUNNING || phase != Phase.ATTACHED || holder != player.uniqueId) return false
+        if (state != GameState.RUNNING || PlayerExt(player).game !== this ||
+            player.uniqueId !in alive || phase != Phase.ATTACHED || holder != player.uniqueId) return false
         if (phaseTicks < r.throwDelaySeconds * 20) {
             PlayerExt(player).actionBarSender().warn("再等${ceil((r.throwDelaySeconds * 20 - phaseTicks) / 20.0).toInt()}秒才能扔出")
             player.playSound(player.location, Sound.BLOCK_NOTE_BLOCK_BASS, 0.6f, 0.8f)
             return true
         }
         if (slime == null) return true
+        throwCounts[player.uniqueId] = (throwCounts[player.uniqueId] ?: 0) + 1
+        lastThrower = player.uniqueId
+        if (!lethal && roundDurationTicks - roundTicks in 1..20) lastSecondThrows += player.uniqueId
+        RoundStatistics.add(player.uniqueId, "throws", 1)
         holder = null
         applyEffects(player, false)
         moveSlime(player.eyeLocation.clone().add(player.location.direction.clone().multiply(0.8)))
@@ -129,21 +149,31 @@ class BackbreakerGame : AbstractGame() {
         return true
     }
 
-    fun eliminate(ext: PlayerExt, quit: Boolean = false) {
-        if (state != GameState.RUNNING || !alive.remove(ext.uniqueId)) return
+    fun eliminate(ext: PlayerExt, quit: Boolean = false, reportDeath: Boolean = true) {
+        if (state != GameState.RUNNING || (!quit && ext.game !== this) || !alive.remove(ext.uniqueId)) return
+        if (!quit && reportDeath && lethal) lastSecondThrows.filter { it in alive }.forEach {
+            GameAchievements.unlock(it, "last_second")
+        }
+        if (!quit && reportDeath) MCZJUGameCore.getGameStatisticsManager().reportDeath(this, ext.uniqueId, null)
+        if (quit) {
+            if (lastThrower == ext.uniqueId) lastThrower = null
+            lastSecondThrows -= ext.uniqueId
+            statistics.complete(ext.uniqueId, Outcome.LOSS)
+        }
+        RoundStatistics.best(ext.uniqueId, "best_survival_millis", ticks * 50L)
         survivalTicks[ext.uniqueId] = ticks
         val player = ext.player
         if (holder == ext.uniqueId) holder = null
         sender.warn("${ext.displayName}${if (quit) "退出游戏" else "被史莱姆淘汰"}！")
         if (quit && player.isOnline) {
-            ext.resetState()
+            resetPlayerState(ext)
             player.gameMode = GameMode.ADVENTURE
             bossBar?.removePlayer(player)
         }
         if (!quit && player.isOnline) {
             player.world.spawnParticle(Particle.EXPLOSION, player.location.clone().add(0.0, 1.0, 0.0), 1)
             player.world.playSound(player.location, Sound.ENTITY_GENERIC_EXPLODE, 1.5f, 1.1f)
-            ext.resetState()
+            resetPlayerState(ext)
             player.gameMode = GameMode.SPECTATOR
         }
         if (alive.size <= 1) {
@@ -201,6 +231,21 @@ class BackbreakerGame : AbstractGame() {
                 if (target == null || target.uniqueId !in alive) { beginReset(); return }
                 moveSlime(headSlimeLocation(target))
                 phaseTicks++
+                if (r.attachedExplosionSeconds > 0) {
+                    // 每局累计值不随投掷或下一轮史莱姆重置；投掷等待仍按本次附身计时。
+                    val elapsedTicks = if (r.cumulativeAttachedExplosion) {
+                        ((heldTicks[target.uniqueId] ?: 0) + 1).also { heldTicks[target.uniqueId] = it }
+                    } else phaseTicks
+                    val remainingTicks = r.attachedExplosionSeconds * 20 - elapsedTicks
+                    if (remainingTicks <= 0) {
+                        sender.warn(if (r.cumulativeAttachedExplosion) {
+                            "${target.name}本局累计持有史莱姆已达${r.attachedExplosionSeconds}秒，被炸飞淘汰！"
+                        } else "${target.name}未能及时扔出史莱姆，被炸飞淘汰！")
+                        eliminate(PlayerExt(target))
+                        return
+                    }
+                    bossBar?.setTitle("${target.name}将在${ceil(remainingTicks / 20.0).toInt()}秒后爆炸！")
+                }
                 if (phaseTicks == r.throwDelaySeconds * 20) {
                     target.playSound(target.location, Sound.BLOCK_NOTE_BLOCK_PLING, 1f, 1.6f)
                     PlayerExt(target).actionBarSender().primary("现在可以左键扔出史莱姆！")
@@ -266,6 +311,13 @@ class BackbreakerGame : AbstractGame() {
     }
 
     private fun attach(player: Player) {
+        everAttached += player.uniqueId
+        lastThrower?.takeIf { it != player.uniqueId }?.let { thrower ->
+            val targets = throwTargets.getOrPut(thrower) { mutableSetOf() }
+            targets += player.uniqueId
+            if (targets.size >= 3) GameAchievements.unlock(thrower, "share_the_slime")
+        }
+        lastThrower = null
         if (lethal) { eliminate(PlayerExt(player)); return }
         phase = Phase.ATTACHED
         phaseTicks = 0
@@ -298,15 +350,32 @@ class BackbreakerGame : AbstractGame() {
         val current = entity.location
         val next = current.clone().add(velocity)
         val hit = current.world.rayTraceBlocks(current.clone().add(0.0, 0.05, 0.0), velocity, velocity.length())
-        if (hit?.hitBlockFace == BlockFace.UP) {
-            val point = hit.hitPosition
-            moveSlime(Location(current.world, point.x, hit.hitBlock!!.y + 1.0, point.z))
-            return true
-        }
         if (hit != null) {
+            val block = hit.hitBlock
+            if (hit.hitBlockFace == BlockFace.UP && block != null) {
+                // 只在真正撞到地面时结束投掷，落点用方块顶面而非射线边缘。
+                val landing = Location(current.world, block.x + 0.5, block.y + 1.0, block.z + 0.5)
+                val spawn = (gameRoom as BackbreakerRoom).spawnLocation
+                val destination = if (spawn != null && landing.blockY != spawn.blockY) {
+                    navigator?.nearestOnSpawnPlane(landing) ?: return false
+                } else landing
+                moveSlime(destination)
+                return true
+            }
+            // 侧墙/天花板碰撞不能切换到地面寻路。把史莱姆中心放回墙外，
+            // 清掉水平速度后保留重力，让它沿墙落下并在地面碰撞时再切换。
+            val safe = current.clone()
+            if (block != null) when (hit.hitBlockFace) {
+                BlockFace.WEST -> safe.x = block.x - 0.501
+                BlockFace.EAST -> safe.x = block.x + 1.501
+                BlockFace.NORTH -> safe.z = block.z - 0.501
+                BlockFace.SOUTH -> safe.z = block.z + 1.501
+                else -> Unit
+            }
+            moveSlime(safe)
             velocity.x = 0.0
             velocity.z = 0.0
-            if (velocity.y > 0) velocity.y = 0.0
+            if (velocity.y > 0.0) velocity.y = 0.0
         } else {
             moveSlime(next)
         }
@@ -334,6 +403,7 @@ class BackbreakerGame : AbstractGame() {
         }
         thrownVelocity = null
         round++
+        lastThrower = null; lastSecondThrows.clear()
         roundTicks = 0
         val variance = r.explosionTimeVarianceSeconds
         val offset = if (variance == 0) 0 else kotlin.random.Random.nextInt(-variance, variance + 1)
@@ -347,6 +417,7 @@ class BackbreakerGame : AbstractGame() {
     }
 
     private fun beginReset() {
+        lastThrower = null; lastSecondThrows.clear()
         slime?.remove()
         slime = null
         thrownVelocity = null
@@ -360,9 +431,14 @@ class BackbreakerGame : AbstractGame() {
 
     private fun applyEffects(player: Player, attached: Boolean) {
         val r = gameRoom as BackbreakerRoom
-        player.addPotionEffect(PotionEffect(PotionEffectType.SLOWNESS, PotionEffect.INFINITE_DURATION,
-            if (attached) r.attachedSlowAmplifier else r.slowAmplifier, true, false, false))
+        player.walkSpeed = if (attached) r.attachedPlayerSpeed else r.playerSpeed
         player.addPotionEffect(PotionEffect(PotionEffectType.SATURATION, PotionEffect.INFINITE_DURATION, 0, true, false, false))
+    }
+
+    /** MGC resetState 不会恢复 Bukkit 的行走速度，离开本局时显式设回默认值。 */
+    private fun resetPlayerState(ext: PlayerExt) {
+        ext.resetState()
+        ext.player.walkSpeed = DEFAULT_WALK_SPEED
     }
 
     private fun finish() {
@@ -378,6 +454,14 @@ class BackbreakerGame : AbstractGame() {
         // game, so the winner and runner-up can have identical tick counts.
         // Keep the last survivor first when that happens.
         val winnerId = alive.firstOrNull()
+        winnerId?.let { id ->
+            if ((throwCounts[id] ?: 0) >= 5) GameAchievements.unlock(id, "hot_potato")
+            if (initialPlayers >= 4 && id !in everAttached) GameAchievements.unlock(id, "untouched")
+        }
+        survivors.keys.forEach { id ->
+            statistics.complete(id, if (id == winnerId) Outcome.WIN else Outcome.LOSS)
+            RoundStatistics.best(id, "best_survival_millis", (survivalTicks[id] ?: 0L) * 50L)
+        }
         val ranking = survivors.keys.sortedWith(
             compareByDescending<UUID> { it == winnerId }
                 .thenByDescending { survivalTicks[it] ?: 0L }
@@ -396,7 +480,7 @@ class BackbreakerGame : AbstractGame() {
         val gamePlayers = players.toList()
         gamePlayers.forEach { ext ->
             if (!ext.player.isOnline) return@forEach
-            ext.resetState()
+            resetPlayerState(ext)
             ext.player.gameMode = GameMode.ADVENTURE
         }
         if (returnToLobby) {
@@ -407,6 +491,7 @@ class BackbreakerGame : AbstractGame() {
         alive.clear()
         survivors.clear()
         survivalTicks.clear()
+        heldTicks.clear()
         holder = null
         flightStart = null
         navigator = null
@@ -414,6 +499,7 @@ class BackbreakerGame : AbstractGame() {
     }
 
     companion object {
+        private const val DEFAULT_WALK_SPEED = 0.2f
         private val active = mutableSetOf<BackbreakerGame>()
         fun isGameSlime(entity: org.bukkit.entity.Entity): Boolean = active.any { it.slime?.uniqueId == entity.uniqueId }
         fun shutdownAll() { active.toList().forEach { MCZJUGameCore.getGameManager().abortGame(it) } }
@@ -425,7 +511,7 @@ class BackbreakerGame : AbstractGame() {
             event.isCancelled = true
             event.drops.clear()
             event.droppedExp = 0
-            owner.eliminate(player)
+            owner.eliminate(player, reportDeath = false)
         }
     }
     private class QuitStrategy(game: BackbreakerGame) : AbstractPlayerQuitStrategy(game) {

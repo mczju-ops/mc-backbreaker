@@ -15,9 +15,15 @@ import org.bukkit.event.entity.EntityDamageByEntityEvent
 import org.bukkit.event.entity.EntityDamageEvent
 import org.bukkit.event.player.PlayerInteractEntityEvent
 import org.bukkit.event.player.PlayerInteractEvent
+import com.destroystokyo.paper.event.player.PlayerJumpEvent
 
 @YikuniEvent
 class GameListener : Listener {
+    @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
+    fun onJump(event: PlayerJumpEvent) {
+        if (PlayerExt(event.player).game is BackbreakerGame) event.isCancelled = true
+    }
+
     @EventHandler(priority = EventPriority.HIGH)
     fun onInteract(event: PlayerInteractEvent) {
         if (event.hand == org.bukkit.inventory.EquipmentSlot.OFF_HAND) return
